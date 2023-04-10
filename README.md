@@ -1,2 +1,2 @@
 # bgj3-jumper
-Game for Bevy Game Gam #3. 
+Game for Bevy Game Jam #3. 
