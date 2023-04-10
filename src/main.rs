@@ -12,6 +12,8 @@ pub const NUMBER_OF_CANDIES: usize = 10;
 pub const CANDY_SIZE: f32 = 32.0;
 pub const CANDY_SPAWN_TIME: f32 = 1.0;
 pub const ENEMY_SPAWN_TIME: f32 = 5.0;
+pub const EATEN_CANDIES_TO_EXTEND_CANDY_SPAWN_TIME: usize = 50;
+pub const EATEN_CANDIES_TO_CUT_ENEMY_SPAWN_TIME: usize = 20;
 
 fn main() {
     App::new()
@@ -19,7 +21,6 @@ fn main() {
         .init_resource::<Score>()
         .init_resource::<CandySpawnTimer>()
         .init_resource::<EnemySpawnTimer>()
-        .init_resource::<CodeTimer>()
         .add_startup_system(spawn_player)
         .add_startup_system(spawn_camera)
         .add_startup_system(spawn_enemies)
@@ -52,9 +53,12 @@ pub struct Enemy {
 #[derive(Component)]
 pub struct Candy {}
 
+#[derive(Component)]
+pub struct EndScreen {}
+
 #[derive(Resource)]
 pub struct Score {
-    pub value: u32,
+    pub value: usize,
 }
 
 //noinspection RsTraitImplementation
@@ -92,21 +96,6 @@ impl Default for EnemySpawnTimer {
     }
 }
 
-#[derive(Resource)]
-pub struct CodeTimer {
-    pub count: u32,
-    pub timer: u32,
-}
-
-//noinspection RsTraitImplementation
-impl Default for CodeTimer {
-    fn default() -> CodeTimer {
-        CodeTimer {
-            count: 0,
-            timer: 0,
-        }
-    }
-}
 
 pub fn spawn_player(
     mut commands: Commands,
@@ -261,6 +250,8 @@ pub fn enemy_movement(
 pub fn update_enemy_direction(
     mut enemy_query: Query<(&Transform, &mut Enemy)>,
     window_query: Query<&Window, With<PrimaryWindow>>,
+    asset_server: Res<AssetServer>,
+    audio: Res<Audio>,
 ) {
     let window = window_query.get_single().unwrap();
 
@@ -271,16 +262,25 @@ pub fn update_enemy_direction(
     let y_max = window.height() - half_enemy_size;
 
     for (transform, mut enemy) in enemy_query.iter_mut() {
+        let mut direction_changed = false;
+
         let translation = transform.translation;
 
         //Limit x movement 
         if translation.x < x_min || translation.x > x_max {
             enemy.direction.x *= -1.0;
+            direction_changed = true;
         }
 
         //Limit y movement
         if translation.y < y_min || translation.y > y_max {
             enemy.direction.y *= -1.0;
+            direction_changed = true;
+        }
+
+        if direction_changed {
+            let sound_effect = asset_server.load("audio/border_hit.ogg");
+            audio.play(sound_effect);
         }
     }
 }
@@ -324,7 +324,10 @@ pub fn enemy_hit_player(
     enemy_query: Query<&Transform, With<Enemy>>,
     asset_server: Res<AssetServer>,
     audio: Res<Audio>,
+    window_query: Query<&Window, With<PrimaryWindow>>,
 ) {
+    let window = window_query.get_single().unwrap();
+    
     if let Ok((player_entity, player_transform)) = player_query.get_single_mut() {
         for enemy_transform in enemy_query.iter() {
             let distance = player_transform
@@ -337,6 +340,14 @@ pub fn enemy_hit_player(
                 let sound_effect = asset_server.load("audio/ded.ogg");
                 audio.play(sound_effect);
                 commands.entity(player_entity).despawn();
+                commands.spawn((
+                    SpriteBundle {
+                        transform: Transform::from_xyz(window.width() / 2.0, window.height() / 2.0, 0.0),
+                        texture: asset_server.load("sprites/kill_screen.png"),
+                        ..default()
+                    },
+                    EndScreen {}
+                ));
             }
         }
     }
@@ -358,7 +369,7 @@ pub fn player_hit_candy(
             if distance < PLAYER_SIZE / 2.0 + CANDY_SIZE / 2.0 {
                 println!("Player ate candy!");
                 score.value += 1;
-                let sound_effect = asset_server.load("audio/munch.ogg");
+                let sound_effect = asset_server.load("audio/candy_eaten.ogg");
                 audio.play(sound_effect);
                 commands.entity(candy_entity).despawn();
             }
@@ -375,8 +386,15 @@ pub fn update_score(score: Res<Score>) {
 pub fn tick_candy_spawn_timer(
     mut candy_spawn_timer: ResMut<CandySpawnTimer>,
     time: Res<Time>,
+    score: Res<Score>,
 ) {
-    candy_spawn_timer.timer.tick(time.delta());
+    let mut longer = 1;
+    let eaten_candies = score.value;
+
+    if eaten_candies > EATEN_CANDIES_TO_EXTEND_CANDY_SPAWN_TIME {
+        longer = 2;
+    }
+    candy_spawn_timer.timer.tick(time.delta() / longer);
 }
 
 pub fn spawn_candies_over_time(
@@ -414,8 +432,11 @@ pub fn spawn_enemies_over_time(
     window_query: Query<&Window, With<PrimaryWindow>>,
     asset_server: Res<AssetServer>,
     enemy_spawn_timer: Res<EnemySpawnTimer>,
+    score: Res<Score>,
 ) {
-    if enemy_spawn_timer.timer.finished() {
+    let eaten_candies = score.value;
+
+    if enemy_spawn_timer.timer.finished() && eaten_candies > EATEN_CANDIES_TO_CUT_ENEMY_SPAWN_TIME {
         let window = window_query.get_single().unwrap();
 
         let random_x = random::<f32>() * window.width();
@@ -433,13 +454,3 @@ pub fn spawn_enemies_over_time(
         ));
     }
 }
-// pub fn change_sprites(
-//     keyboard_input: Res<Input<KeyCode>>,
-//     mut player_query: Query<&mut SpriteBundle, With<Player>>,
-//     asset_server: Res<AssetServer>,
-//     time: Res<Time>,
-// ) {
-//     if let Ok(mut player_sprite) = player_query.get_single_mut() {
-//         player_sprite
-//     }
-// }
